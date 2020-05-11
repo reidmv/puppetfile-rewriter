@@ -10,8 +10,8 @@ def main
     parser.on('-m', '--module=MODULE') do |mod|
       opts[:module] = mod
     end
-    parser.on('-c', '--commit=SHA') do |sha|
-      opts[:commit] = sha
+    parser.on('-v', '--version=SHA') do |sha|
+      opts[:version] = sha
     end
     parser.on('-d', '--default-branch=DEFAULT') do |default|
       opts[:default_branch] = default
@@ -27,35 +27,41 @@ def main
   ast           = Parser::CurrentRuby.parse(code)
   buffer        = Parser::Source::Buffer.new('(example)')
   buffer.source = code
-  rewriter      = LockPuppetfileModuleVersion.new(opts[:module], opts[:commit], opts[:default_branch])
+  rewriter      = LockPuppetfileModuleVersion.new(opts[:module], opts[:version], opts[:default_branch])
   rewritten     = rewriter.rewrite(buffer, ast)
 
   File.open("Puppetfile", "w") { |f| f.write(rewritten) }
 end
 
 class LockPuppetfileModuleVersion < Parser::TreeRewriter
-  def initialize(mod, commit, default_branch = nil)
+  def initialize(mod, version, default_branch = nil)
     @mod = mod
-    @commit = commit
+    @version = version
     @default_branch = default_branch
   end
 
   def on_send(node)
-    if target_mod?(node)
-      version_pair = get_pair(node, :branch) || get_pair(node, :commit)
-      replace(version_pair.location.expression, ":commit => '#{get_lock_version(node)}'") unless version_pair.nil?
-    end
+    if git_mod?(node)
+      if target_mod?(node)
+        version_pair = get_pair(node, :branch) || get_pair(node, :commit) || get_pair(node, :ref)
+        unless version_pair.nil?
+          hashkey = version_pair.children[0].children.first.to_s
+          replace(version_pair.location.expression, "#{hashkey}: '#{get_lock_version(node)}'")
+        end
+      end
 
-    if @default_branch && git_mod?(node)
-      default_pair = get_pair(node, :default_branch)
-      replace(default_pair.location.expression, ":default_branch => '#{@default_branch}'") unless default_pair.nil?
+      if @default_branch
+        default_pair = get_pair(node, :default_branch)
+        replace(default_pair.location.expression, "default_branch: '#{@default_branch}'") unless default_pair.nil?
+      end
+    elsif target_mod?(node)
+      replace(node.children[3].location.expression, "'#{@version}'")
     end
   end
 
   def target_mod?(node)
     node.children[1].eql?(:mod) &&
-    get_name(node).eql?(@mod) &&
-    !node.children[3].children.first.is_a?(String)
+    get_name(node).eql?(@mod)
   end
 
   def git_mod?(node)
@@ -79,7 +85,7 @@ class LockPuppetfileModuleVersion < Parser::TreeRewriter
   end
 
   def get_lock_version(node)
-    @commit
+    @version
   end
 end
 
